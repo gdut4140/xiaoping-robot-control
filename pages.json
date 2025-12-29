@@ -1,0 +1,30 @@
+{
+	"pages": [{
+			"path": "pages/splash/splash",
+			"style": {
+				"navigationStyle": "custom" // 隐藏导航栏，实现全屏沉浸
+			}
+		},
+
+		{
+			"path": "pages/index/index",
+			"style": {
+				"navigationBarTitleText": "连接机器人",
+				"navigationStyle": "custom"
+			}
+		},
+		{
+			"path": "pages/control/control",
+			"style": {
+				"navigationBarTitleText": "遥控面板",
+				"navigationStyle": "custom"
+			}
+		}
+	],
+	"globalStyle": {
+		"navigationBarTextStyle": "white",
+		"navigationBarTitleText": "机器人",
+		"navigationBarBackgroundColor": "#1f1f1f",
+		"backgroundColor": "#1f1f1f"
+	}
+}

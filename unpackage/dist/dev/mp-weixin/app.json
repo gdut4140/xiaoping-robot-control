@@ -1,0 +1,14 @@
+{
+  "pages": [
+    "pages/splash/splash",
+    "pages/index/index",
+    "pages/control/control"
+  ],
+  "window": {
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "机器人",
+    "navigationBarBackgroundColor": "#1f1f1f",
+    "backgroundColor": "#1f1f1f"
+  },
+  "usingComponents": {}
+}
