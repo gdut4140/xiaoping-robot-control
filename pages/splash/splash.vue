@@ -58,7 +58,7 @@ onMounted(() => {
 				uni.reLaunch({
 					url: '/pages/index/index'
 				});
-			}, 300);
+			}, 30);
 		}
 	}, 30); // 建议30
 });
