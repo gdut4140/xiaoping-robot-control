@@ -14,7 +14,6 @@
 		<view class="corner top-left">
 			<text class="label">电池电量</text>
 			<view class="energy-bar">
-				<!-- 动态绑定电量宽度 -->
 				<view class="energy-fill" :style="{ width: batteryLevel + '%' }"></view>
 			</view>
 			<text class="value-cyan">{{ batteryLevel }}%</text>
@@ -37,7 +36,8 @@
 		</view>
 
 		<view class="corner bottom-right">
-			<view class="capsule-btn action" :class="{ active: isPickupOn }" hover-class="btn-hover" @click="togglePickup">
+			<view class="capsule-btn action" :class="{ active: isPickupOn }" hover-class="btn-hover"
+				@click="togglePickup">
 				<view class="mini-target"></view>
 				<text>{{ isPickupOn ? '正在拾取' : '自动拾取' }}</text>
 			</view>
@@ -51,14 +51,9 @@
 					<view class="cross-line hori"></view>
 					<view class="cross-line vert"></view>
 
-					<view
-						class="joystick-handle"
-						:style="{ transform: `translate(${stickX}px, ${stickY}px)` }"
-						:class="{ active: isDragging }"
-						@touchstart="onTouchStart"
-						@touchmove.stop.prevent="onTouchMove"
-						@touchend="onTouchEnd"
-					>
+					<view class="joystick-handle" :style="{ transform: `translate(${stickX}px, ${stickY}px)` }"
+						:class="{ active: isDragging }" @touchstart="onTouchStart" @touchmove.stop.prevent="onTouchMove"
+						@touchend="onTouchEnd">
 						<view class="handle-core"></view>
 					</view>
 				</view>
@@ -69,12 +64,12 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
-import BLE from '@/utils/ble.js'; // 1. 引入蓝牙工具
+import BLE from '@/utils/ble.js';
 
 // 状态变量
 const isMotorOn = ref(false);
 const isPickupOn = ref(false);
-const batteryLevel = ref(0); // 电量
+const batteryLevel = ref(0);
 const toastVisible = ref(false);
 const toastMsg = ref('');
 let toastTimer = null;
@@ -88,32 +83,39 @@ let startX = 0;
 let startY = 0;
 
 // 控制参数
-const MAX_LINEAR_SPEED = 0.5; // 最大前进速度 0.5 m/s
-const MAX_ANGULAR_SPEED = 2.0; // 最大旋转速度 2.0 rad/s
+const MAX_LINEAR_SPEED = 0.5;
+const MAX_ANGULAR_SPEED = 2.0;
 let currentLinearX = 0.0;
 let currentAngularZ = 0.0;
-let loopTimer = null; // 发送数据的主循环定时器
+let loopTimer = null;
 
 // === 生命周期 ===
 onMounted(() => {
-	// 2. 监听电池数据
+	// 2. 监听电池
 	BLE.onBatteryUpdate((level) => {
 		batteryLevel.value = level;
 	});
 
-	// 3. 启动发送循环 (17ms一次，即 60Hz)
+	// === [核心修改] 区分平台设置发送频率 ===
+	const sysInfo = uni.getSystemInfoSync();
+	const isIOS = sysInfo.platform === 'ios';
+
+	// 安卓: 17ms (约60Hz) - 极速响应
+	// iOS:  50ms (约20Hz) - 保证稳定不丢包
+	const interval = isIOS ? 50 : 17;
+
+	console.log(`当前平台: ${sysInfo.platform}, 发送间隔: ${interval}ms`);
+
 	loopTimer = setInterval(() => {
-		// 实时发送控制指令
 		BLE.sendControl(currentLinearX, currentAngularZ, isMotorOn.value, isPickupOn.value);
-	}, 17);
+	}, interval);
 });
 
 onUnmounted(() => {
 	if (loopTimer) clearInterval(loopTimer);
-	// 页面销毁时不断开蓝牙，保留连接，只停止发送指令
 });
 
-// === Toast 逻辑 ===
+// === 辅助逻辑 ===
 const showCyberToast = (msg) => {
 	toastMsg.value = msg;
 	toastVisible.value = true;
@@ -158,7 +160,7 @@ const disconnect = () => {
 		cancelColor: '#999999',
 		success: function (res) {
 			if (res.confirm) {
-				BLE.close(); // 关闭连接
+				BLE.close();
 				uni.navigateBack();
 			}
 		}
@@ -179,10 +181,8 @@ const onTouchMove = (e) => {
 
 	let deltaX = touch.clientX - startX;
 	let deltaY = touch.clientY - startY;
-
 	const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
 
-	// 限制半径
 	if (distance > maxRadius) {
 		const ratio = maxRadius / distance;
 		deltaX *= ratio;
@@ -192,23 +192,9 @@ const onTouchMove = (e) => {
 	stickX.value = deltaX;
 	stickY.value = deltaY;
 
-	// //方案一
-	// // === 4. 摇杆坐标映射到机器人速度 ===
-	// // 摇杆 Y 轴：向上为负，向下为正。
-	// // 机器人：向前为正(Linear +)，向后为负(Linear -)。
-	// // 所以 LinearX = -(deltaY / maxRadius) * MaxSpeed
-	// currentLinearX = -(deltaY / maxRadius) * MAX_LINEAR_SPEED;
-
-	// // 摇杆 X 轴：向左为负，向右为正。
-	// // 机器人：向左旋转通常为正 (逆时针, Angular +)，向右为负。
-	// // 所以 AngularZ = -(deltaX / maxRadius) * MaxSpeed
-	// currentAngularZ = -(deltaX / maxRadius) * MAX_ANGULAR_SPEED;
-
-	// 方案二，支持上下10px原地转
 	const deadZone = 10;
 	let effectiveDeltaY = Math.abs(deltaY) < deadZone ? 0 : deltaY;
 
-	// 用处理后的effectiveDeltaY计算线速度
 	currentLinearX = -(effectiveDeltaY / maxRadius) * MAX_LINEAR_SPEED;
 	currentAngularZ = -(deltaX / maxRadius) * MAX_ANGULAR_SPEED;
 };
@@ -217,15 +203,12 @@ const onTouchEnd = () => {
 	isDragging.value = false;
 	stickX.value = 0;
 	stickY.value = 0;
-
-	// 摇杆回中，速度归零
 	currentLinearX = 0.0;
 	currentAngularZ = 0.0;
 };
 </script>
 
 <style lang="scss">
-/* 保持之前的样式完全不变，这里省略以节省篇幅，请直接使用上面的 CSS */
 $primary-color: #2effc9;
 $bg-color: #111618;
 $bg-grid-line: rgba(46, 255, 201, 0.08);
@@ -240,8 +223,6 @@ $bg-grid-line: rgba(46, 255, 201, 0.08);
 	box-sizing: border-box;
 }
 
-/* ...把之前的 CSS 全部贴在这里... */
-/* 摇杆区域样式 */
 .center-control {
 	width: 100%;
 	height: 100%;

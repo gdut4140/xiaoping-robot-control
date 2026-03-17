@@ -56,6 +56,7 @@ onShow(() => {
 });
 
 const handleConnect = () => {
+	BLE.close();
 	statusText.value = '正在搜索设备...';
 
 	// 2. 调用真实的连接逻辑
@@ -71,9 +72,10 @@ const handleConnect = () => {
 		})
 		.catch((err) => {
 			console.error(err);
-			statusText.value = '连接失败，请重试';
+			const errMsg = typeof err === 'string' ? err : JSON.stringify(err);
+			statusText.value = '连接失败';
 			uni.showToast({
-				title: '找不到 OrangePi_Robot',
+				title: errMsg.slice(0, 20),
 				icon: 'none'
 			});
 		});

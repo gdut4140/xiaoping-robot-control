@@ -1,7 +1,6 @@
 // utils/ble.js
 
 // === 1. 配置参数 ===
-// 建议：将 UUID 统一转为大写，避免部分老旧 iOS 机型大小写敏感问题
 const SERVICE_UUID = "A07498CA-AD5B-474E-940D-16F1FBE7E8CD".toUpperCase();
 const CHAR_UUID = "51FF12BB-3ED8-46E5-B4F9-D64E2FEC021B".toUpperCase();
 const DEVICE_NAME_PREFIX = "OrangePi_Robot";
@@ -10,8 +9,41 @@ const DEVICE_NAME_PREFIX = "OrangePi_Robot";
 let deviceId = "";
 let serviceId = "";
 let characteristicId = "";
+let writeType = "write";
 let isConnected = false;
-let isConnecting = false; // [新增] 防止 iOS 频繁回调导致重复连接
+let isConnecting = false; // 防抖锁
+let onDeviceFoundHandler = null;
+let characteristicProperties = null;
+
+function normalizeUUID(uuid) {
+	return (uuid || "").toUpperCase();
+}
+
+function formatBleError(prefix, err) {
+	if (!err) return prefix;
+	const code = typeof err.errCode === "number" ? ` [${err.errCode}]` : "";
+	const msg = err.errMsg || JSON.stringify(err);
+	return `${prefix}${code}: ${msg}`;
+}
+
+function stopDiscoveryAndUnregister() {
+	uni.stopBluetoothDevicesDiscovery({
+		fail: () => { }
+	});
+	if (onDeviceFoundHandler) {
+		uni.offBluetoothDeviceFound(onDeviceFoundHandler);
+		onDeviceFoundHandler = null;
+	}
+}
+
+function hasTargetService(device) {
+	const serviceList = device.advertisServiceUUIDs || device.advertiseServiceUUIDs || [];
+	return serviceList.some((id) => normalizeUUID(id) === SERVICE_UUID);
+}
+
+function getDisplayName(device) {
+	return device.name || device.localName || "";
+}
 
 // === 2. 辅助函数：计算校验和 ===
 function calculateChecksum(dataView, length) {
@@ -27,71 +59,79 @@ export default {
 	// --- 初始化与连接 ---
 	connect() {
 		return new Promise((resolve, reject) => {
-			// 重置状态
-			isConnecting = false;
+			if (isConnecting) {
+				reject("蓝牙连接中，请稍后再试");
+				return;
+			}
 
-			// 1. 初始化蓝牙模块
+			if (isConnected && deviceId) {
+				resolve("已连接");
+				return;
+			}
+
+			isConnecting = true;
 			uni.openBluetoothAdapter({
 				success: () => {
-					// 2. 开始搜索
+					let timeout = null;
+					timeout = setTimeout(() => {
+						stopDiscoveryAndUnregister();
+						isConnecting = false;
+						reject("搜索超时，请确认机器人已上电且在附近");
+					}, 12000);
+
+					onDeviceFoundHandler = (res) => {
+						const devices = Array.isArray(res.devices) ? res.devices : [];
+						for (const device of devices) {
+							const deviceName = getDisplayName(device);
+							const byName = deviceName.includes(DEVICE_NAME_PREFIX);
+							const byService = hasTargetService(device);
+
+							if ((byName || byService) && !isConnected) {
+								console.log("找到设备:", deviceName || device.deviceId);
+								stopDiscoveryAndUnregister();
+								clearTimeout(timeout);
+
+								deviceId = device.deviceId;
+
+								uni.createBLEConnection({
+									deviceId,
+									success: () => {
+										isConnected = true;
+										// iOS 上服务发现通常需要更长稳定时间
+										setTimeout(() => {
+											this.getServices(resolve, reject);
+										}, 1000);
+									},
+									fail: (err) => {
+										isConnected = false;
+										isConnecting = false;
+										reject(formatBleError("连接失败", err));
+									}
+								});
+								break;
+							}
+						}
+					};
+
+					uni.onBluetoothDeviceFound(onDeviceFoundHandler);
+
 					uni.startBluetoothDevicesDiscovery({
-						allowDuplicatesKey: false, // [iOS优化] 禁止重复上报，但在某些安卓机无效，依然需要手动防抖
+						allowDuplicatesKey: false,
+						services: [SERVICE_UUID],
 						success: () => {
-							// 监听发现新设备
-							uni.onBluetoothDeviceFound((res) => {
-								const device = res.devices[0];
-
-								// [iOS适配关键点 1]：iOS 广播名称通常在 localName 中，而 name 可能是空的
-								const deviceName = device.name || device
-									.localName || "";
-
-								// [iOS适配关键点 2]：过滤名称 + 防止重复连接
-								if (deviceName.includes(DEVICE_NAME_PREFIX) && !
-									isConnecting && !isConnected) {
-									isConnecting = true; // 锁定状态
-
-									console.log("找到设备:", deviceName, "ID:",
-										device.deviceId);
-									uni
-								.stopBluetoothDevicesDiscovery(); // 找到后立即停止搜索，节省资源
-
-									deviceId = device.deviceId;
-
-									// 3. 连接设备
-									uni.createBLEConnection({
-										deviceId,
-										success: () => {
-											isConnected = true;
-											isConnecting = false;
-
-											// [iOS适配关键点 3]：iOS 连接建立极快，但服务发现可能还没准备好
-											// 保持延时是很好的做法，部分老款 iPhone 可能需要 1500ms
-											setTimeout(() => {
-												this.getServices(
-													resolve,
-													reject
-													);
-											}, 1000);
-										},
-										fail: (err) => {
-											isConnecting = false;
-											reject("连接失败: " + JSON
-												.stringify(err));
-										}
-									});
-								}
-							});
+							console.log("开始扫描设备...");
 						},
-						fail: (err) => reject("搜索失败: " + JSON.stringify(err))
+						fail: (err) => {
+							clearTimeout(timeout);
+							stopDiscoveryAndUnregister();
+							isConnecting = false;
+							reject(formatBleError("搜索失败", err));
+						}
 					});
 				},
 				fail: (err) => {
-					// iOS 如果蓝牙没开，会报 10001
-					if (err.errCode === 10001) {
-						reject("请开启手机蓝牙");
-					} else {
-						reject("蓝牙初始化失败: " + JSON.stringify(err));
-					}
+					isConnecting = false;
+					reject(formatBleError("请打开蓝牙", err));
 				}
 			});
 		});
@@ -102,46 +142,60 @@ export default {
 		uni.getBLEDeviceServices({
 			deviceId,
 			success: (res) => {
-				// [iOS适配] 这里的 uuid 有时候带横杠有时候不带，统一去横杠+大写比较稳妥，
-				// 但通常标准 UUID 只要 toUpperCase() 即可。
-				const targetService = res.services.find(s => s.uuid.toUpperCase() === SERVICE_UUID);
-
+				const targetService = res.services.find(s => normalizeUUID(s.uuid) === SERVICE_UUID);
 				if (targetService) {
 					serviceId = targetService.uuid;
-
-					// 延迟一下再获取特征值，防止 iOS 拥塞
 					setTimeout(() => {
 						uni.getBLEDeviceCharacteristics({
 							deviceId,
-							serviceId, // [iOS 必须] 安卓有时候可以不传 serviceId，但 iOS 必须传
+							serviceId,
 							success: (res) => {
-								const targetChar = res.characteristics.find(c => c.uuid
-									.toUpperCase() === CHAR_UUID);
-								if (targetChar) {
-									characteristicId = targetChar.uuid;
+								const targetChar = res.characteristics.find(c => normalizeUUID(c.uuid) === CHAR_UUID);
+								const fallbackWritable = res.characteristics.find((c) => {
+									const p = c.properties || {};
+									return !!(p.write || p.writeNoResponse);
+								});
+								const selectedChar = targetChar || fallbackWritable;
 
-									// 开启通知
-									this.listenBattery();
-									resolve("连接成功");
-								} else {
-									reject("未找到特征值: " + CHAR_UUID);
+								if (!selectedChar) {
+									reject("未找到可写特征值");
+									isConnecting = false;
+									return;
 								}
+
+								characteristicId = selectedChar.uuid;
+								characteristicProperties = selectedChar.properties || {};
+								writeType = characteristicProperties.writeNoResponse ? "writeNoResponse" : "write";
+								console.log("特征值就绪:", characteristicId, "writeType:", writeType);
+
+								if (characteristicProperties.notify || characteristicProperties.indicate) {
+									this.listenBattery();
+								}
+
+								isConnecting = false;
+								resolve("连接成功");
 							},
-							fail: (err) => reject("获取特征值失败: " + JSON.stringify(err))
+							fail: (err) => {
+								isConnecting = false;
+								reject(formatBleError("获取特征值失败", err));
+							}
 						});
-					}, 200);
+					}, 500);
 				} else {
-					console.log("Available Services:", res.services.map(s => s.uuid));
-					reject("未找到目标服务: " + SERVICE_UUID);
+					isConnecting = false;
+					reject("未找到目标服务");
 				}
 			},
-			fail: (err) => reject("获取服务失败: " + JSON.stringify(err))
+			fail: (err) => {
+				isConnecting = false;
+				reject(formatBleError("获取服务失败", err));
+			}
 		});
 	},
 
-	// --- 发送控制指令 (保持不变) ---
+	// --- 发送控制指令 ---
 	sendControl(linearX, angularZ, motorEnable, frictionEnable) {
-		if (!isConnected || !deviceId) return;
+		if (!isConnected || !deviceId || !serviceId || !characteristicId) return;
 
 		const buffer = new ArrayBuffer(15);
 		const view = new DataView(buffer);
@@ -153,27 +207,25 @@ export default {
 		view.setFloat32(7, angularZ, true);
 		view.setUint8(11, motorEnable ? 0x01 : 0x00);
 		view.setUint8(12, frictionEnable ? 0x01 : 0x00);
-
 		const checksum = calculateChecksum(view, 13);
 		view.setUint8(13, checksum);
 		view.setUint8(14, 0xFF);
 
-		// [iOS优化] 增加 writeType，部分 iOS 设备默认 writeType 可能不正确
-		// 如果你的硬件支持无响应写入 (Write Without Response)，加上 writeType: 'writeNoResponse' 会更流畅
-		// 这里暂且保持默认，如果觉得卡顿可以加上试试
 		uni.writeBLECharacteristicValue({
 			deviceId,
 			serviceId,
 			characteristicId,
 			value: buffer,
+			writeType,
 			fail: (err) => {
-				// 忽略频繁写入时的部分错误，避免控制台刷屏
-				if (err.errCode !== 10008) console.error("发送失败", err);
+				if (err.errCode !== 10008) {
+					console.error("发送失败", err);
+				}
 			}
 		});
 	},
 
-	// --- 监听电量反馈 (保持不变) ---
+	// --- 监听电量 ---
 	onBatteryUpdate(callback) {
 		this.batteryCallback = callback;
 	},
@@ -186,41 +238,33 @@ export default {
 			characteristicId,
 			success: () => {
 				uni.onBLECharacteristicValueChange((res) => {
-					// iOS 返回的 res.value 也是 ArrayBuffer，处理逻辑一致
 					const view = new DataView(res.value);
-					if (view.byteLength >= 6) {
-						const head1 = view.getUint8(0);
-						const head2 = view.getUint8(1);
-						const tail = view.getUint8(5);
-
-						if (head1 === 0xAA && head2 === 0x55 && tail === 0xFF) {
-							const battery = view.getUint8(3);
-							const calcSum = calculateChecksum(view, 4);
-							const recvSum = view.getUint8(4);
-
-							if (calcSum === recvSum) {
-								if (this.batteryCallback) this.batteryCallback(battery);
-							}
-						}
+					if (view.byteLength >= 6 && view.getUint8(0) === 0xAA) {
+						if (this.batteryCallback) this.batteryCallback(view.getUint8(3));
 					}
 				});
 			},
-			fail: (err) => console.error("监听电量失败", err)
+			fail: (err) => {
+				console.warn("开启通知失败", err);
+			}
 		});
 	},
 
-	// 断开连接
 	close() {
-		if (deviceId) {
-			uni.closeBLEConnection({
-				deviceId,
-				success: () => console.log("断开连接成功"),
-				fail: (err) => console.log("断开连接失败/已断开", err)
-			});
-		}
-		uni.closeBluetoothAdapter();
+		stopDiscoveryAndUnregister();
+		if (deviceId) uni.closeBLEConnection({
+			deviceId,
+			fail: () => { }
+		});
+		uni.closeBluetoothAdapter({
+			fail: () => { }
+		});
 		isConnected = false;
 		isConnecting = false;
 		deviceId = "";
+		serviceId = "";
+		characteristicId = "";
+		characteristicProperties = null;
+		writeType = "write";
 	}
 };
