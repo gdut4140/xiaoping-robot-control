@@ -8,6 +8,6 @@ project.private.config.json
 *密钥*
 *.secret
 *.key
-
+小程序密钥.txt
 # 系统文件
 .DS_Store
